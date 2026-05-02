@@ -252,6 +252,14 @@ final class fllama_inference_request extends ffi.Struct {
 
   /// Optional: OpenAI JSON string. Defaults to NULL.
   external ffi.Pointer<ffi.Char> openai_request_json_string;
+
+  /// FLLAMA-PATCH: Optional KV-cache quantization type for K matrix.
+  /// String mirrors `--cache-type-k` upstream: f32, f16, bf16, q8_0,
+  /// q4_0, q4_1, iq4_nl, q5_0, q5_1. NULL/empty = f16 default.
+  external ffi.Pointer<ffi.Char> kv_cache_type_k;
+
+  /// FLLAMA-PATCH: Optional KV-cache quantization type for V matrix.
+  external ffi.Pointer<ffi.Char> kv_cache_type_v;
 }
 
 typedef fllama_log_callback

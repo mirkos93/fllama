@@ -111,6 +111,21 @@ class OpenAiRequest {
   // the answer directly. Default true preserves prior behaviour.
   final bool enableThinking;
 
+  /// FLLAMA-PATCH: number of CPU threads. `0` (default) lets llama.cpp
+  /// pick from device cores. Hosts that know their device tier should
+  /// override (Tacita's `RuntimePlanner.tune()` sets this per chip
+  /// class to avoid leaving the 4–6 big cores on Tensor G3 idle).
+  final int numThreads;
+
+  /// FLLAMA-PATCH: optional KV-cache quantization for the K matrix.
+  /// One of `f32`, `f16` (default), `bf16`, `q8_0`, `q4_0`, `q4_1`,
+  /// `iq4_nl`, `q5_0`, `q5_1`. Null leaves llama.cpp on `f16`.
+  final String? kvCacheTypeK;
+
+  /// FLLAMA-PATCH: optional KV-cache quantization for the V matrix.
+  /// Same allowed values as [kvCacheTypeK].
+  final String? kvCacheTypeV;
+
   String toJsonString() {
     final Map<String, dynamic> json = {
       'messages': messages.map((m) {
@@ -208,5 +223,9 @@ class OpenAiRequest {
     // Whether the Jinja template should enable the model's reasoning
     // channel. Defaults to true (matches prior hardcoded behaviour).
     this.enableThinking = true,
+    // FLLAMA-PATCH: 0 = "let llama.cpp pick from device cores".
+    this.numThreads = 0,
+    this.kvCacheTypeK,
+    this.kvCacheTypeV,
   });
 }

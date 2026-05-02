@@ -132,6 +132,16 @@ Pointer<fllama_inference_request> _toNative(
     request.openai_request_json_string =
         openAiRequestJsonStringCstr.cast<Char>();
   }
+  // FLLAMA-PATCH: KV-cache quantization. Skip if empty/null so the C
+  // side falls back to the F16 default via fllama_kv_cache_type_from_str.
+  if (dart.kvCacheTypeK != null && dart.kvCacheTypeK!.isNotEmpty) {
+    final p = dart.kvCacheTypeK!.toNativeUtf8();
+    request.kv_cache_type_k = p.cast<Char>();
+  }
+  if (dart.kvCacheTypeV != null && dart.kvCacheTypeV!.isNotEmpty) {
+    final p = dart.kvCacheTypeV!.toNativeUtf8();
+    request.kv_cache_type_v = p.cast<Char>();
+  }
   if (dart.logger != null) {
     void onResponse(Pointer<Char> responsePointer) {
       final message = pointerCharToString(responsePointer);
@@ -342,6 +352,13 @@ void _fllamaInferenceIsolate(SendPort sendPort) async {
           }
           if (nativeRequest.model_mmproj_path != nullptr) {
             calloc.free(nativeRequest.model_mmproj_path);
+          }
+          // FLLAMA-PATCH: free KV-cache type strings (when set).
+          if (nativeRequest.kv_cache_type_k != nullptr) {
+            calloc.free(nativeRequest.kv_cache_type_k);
+          }
+          if (nativeRequest.kv_cache_type_v != nullptr) {
+            calloc.free(nativeRequest.kv_cache_type_v);
           }
           calloc.free(nativeRequestPointer);
         }

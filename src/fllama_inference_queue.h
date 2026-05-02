@@ -49,7 +49,13 @@ struct ServerResources {
 // ---------------------------------------------------------------------------
 class ServerManager {
 public:
-  static constexpr int DEFAULT_N_PARALLEL = 4;
+  // FLLAMA-PATCH: Tacita is a single-user, single-slot mobile chat app.
+  // Upstream's `n_parallel = 4` quadruples the per-context KV cache and
+  // forces Tacita's RuntimePlanner to floor `min_n_ctx` at 2048 tokens
+  // (since llama.cpp rejects n_ctx / n_parallel < 512). One slot is
+  // sufficient for our use case. When rebasing fllama against upstream
+  // llama.cpp, search for FLLAMA-PATCH markers to re-apply this.
+  static constexpr int DEFAULT_N_PARALLEL = 1;
   static int MODEL_INACTIVITY_TIMEOUT_SEC;
   static int CLEANUP_INTERVAL_SEC;
 

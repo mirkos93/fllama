@@ -101,6 +101,31 @@ static void fllama_copy_cstr(char * dst, size_t cap, const char * src) {
   std::snprintf(dst, cap, "%s", src ? src : "");
 }
 
+// FLLAMA-PATCH: map a string like "f16" / "q8_0" / "q4_0" to a ggml_type
+// for KV-cache quantization. Mirrors `kv_cache_type_from_str` from
+// llama.cpp/common/arg.cpp (which is `static` so we re-implement here).
+// Returns GGML_TYPE_F16 on null / empty / unknown input — the safe
+// upstream default. Allowed values match `--cache-type-k` upstream.
+static ggml_type fllama_kv_cache_type_from_str(const char * s) {
+  if (s == nullptr || s[0] == '\0') return GGML_TYPE_F16;
+  std::string name(s);
+  static const ggml_type kv_cache_types[] = {
+      GGML_TYPE_F32,
+      GGML_TYPE_F16,
+      GGML_TYPE_BF16,
+      GGML_TYPE_Q8_0,
+      GGML_TYPE_Q4_0,
+      GGML_TYPE_Q4_1,
+      GGML_TYPE_IQ4_NL,
+      GGML_TYPE_Q5_0,
+      GGML_TYPE_Q5_1,
+  };
+  for (const auto & t : kv_cache_types) {
+    if (name == ggml_type_name(t)) return t;
+  }
+  return GGML_TYPE_F16;
+}
+
 // ── The actual inference logic (runs on per-request thread) ──────────────────
 
 static void run_inference(fllama_inference_request request,
@@ -146,6 +171,13 @@ static void run_inference(fllama_inference_request request,
     // The KV cache in the llama_context still handles prompt reuse;
     // this only controls the EXTRA host-RAM cache from PR #16391.
     params.cache_ram_mib = 0;
+
+    // FLLAMA-PATCH: KV-cache quantization. F16 by default; Tacita's
+    // RuntimePlanner overrides on RAM-tight devices to roughly double
+    // effective context for ~3% perplexity. Both K and V can be set
+    // independently so callers can mix (e.g. f16 K, q8_0 V).
+    params.cache_type_k = fllama_kv_cache_type_from_str(request.kv_cache_type_k);
+    params.cache_type_v = fllama_kv_cache_type_from_str(request.kv_cache_type_v);
 
 #if TARGET_IPHONE_SIMULATOR
     params.n_gpu_layers = 0;

@@ -49,21 +49,26 @@ class FllamaInferenceRequest {
 
   /// Number of threads to use for inference.
   ///
-  /// 2 by default based on testing performed 2024 Feb 15, and model loading
-  /// taking ~3 minutes when thread count exceeds 2 on Pixel Fold.
+  /// **FLLAMA-PATCH (Tacita): `0` is now the canonical "auto" sentinel.**
+  /// When `numThreads == 0`, llama.cpp picks via its own
+  /// `cpu_get_num_math()` heuristic (typically `min(num_perf_cores, 8)`).
+  /// Hosts that want explicit control should still set this — Tacita's
+  /// `RuntimePlanner.tune()` does, per device class.
   ///
-  /// See class code for benchmarks from 2024 Feb 15.
-  // Pixel Fold x StableLM 3B Zephyr, 2024 Feb 15:
-  // - 99 gpu layers works, doesn't seem to affect performance or system load.
-  // - default of 4 threads makes model loading take forever
-  // - 1 thread / 0 layers: 4.7
-  // - 1 thread / 99 layers: 4.5
-  // - 2 threads / 0 layers: 7.7
-  // M2 Ultra MBP 2024 x LLaVA 1.6 Mistral 7B, 2024 Feb 15:
-  // - 2 threads / 0 layers: 6.54
-  // - 2 threads / 99 layers: 38.9
-  // - 4 threads / 99 layers: 35.5
-  // - 8 threads / 99 layers: 38.9
+  /// Historical context (preserved for upstream rebases): the legacy
+  /// default was `2`, picked from a 2024 Pixel Fold benchmark on a much
+  /// older llama.cpp build where ≥4 threads tanked model load. That
+  /// regression is no longer present on modern phones (Tensor G3,
+  /// Snapdragon 8 Gen 2+) and the 2-thread cap leaves 4–6 perf cores
+  /// idle, costing ~60–90% on Pro tok/s.
+  ///
+  /// Original Pixel Fold x StableLM 3B Zephyr, 2024 Feb 15:
+  /// - 1 thread / 0 layers: 4.7 tok/s
+  /// - 2 threads / 0 layers: 7.7 tok/s
+  /// - default of 4 threads at the time: model loading became extremely slow
+  /// M2 Ultra MBP 2024 x LLaVA 1.6 Mistral 7B, 2024 Feb 15:
+  /// - 2 threads / 99 layers: 38.9 tok/s
+  /// - 8 threads / 99 layers: 38.9 tok/s (no harm)
   int numThreads;
   double temperature;
   double penaltyFrequency;
@@ -72,6 +77,16 @@ class FllamaInferenceRequest {
   String? grammar;
   Function(String)? logger;
   String? eosToken;
+
+  /// FLLAMA-PATCH: optional KV-cache quantization type for the K matrix.
+  /// One of: `f32`, `f16` (default), `bf16`, `q8_0`, `q4_0`, `q4_1`,
+  /// `iq4_nl`, `q5_0`, `q5_1`. Null or empty leaves llama.cpp on `f16`.
+  /// `q8_0` halves KV-cache RAM at ~3% perplexity cost.
+  String? kvCacheTypeK;
+
+  /// FLLAMA-PATCH: optional KV-cache quantization type for the V matrix.
+  /// Same allowed values as [kvCacheTypeK].
+  String? kvCacheTypeV;
 
   FllamaInferenceRequest({
     required this.contextSize,
@@ -86,9 +101,13 @@ class FllamaInferenceRequest {
     this.grammar,
     this.eosToken,
     this.modelMmprojPath,
-    this.numThreads = 2,
+    // FLLAMA-PATCH: 0 = "let llama.cpp pick from device cores".
+    // Hosts that know their device class should still override this.
+    this.numThreads = 0,
     this.logger,
     this.openAiRequestJsonString,
+    this.kvCacheTypeK,
+    this.kvCacheTypeV,
   });
 }
 
@@ -170,6 +189,7 @@ Future<int> fllamaChat(
     modelPath: request.modelPath,
     modelMmprojPath: request.mmprojPath,
     numGpuLayers: request.numGpuLayers,
+    numThreads: request.numThreads,
     penaltyFrequency: request.frequencyPenalty,
     penaltyRepeat: request.presencePenalty,
     temperature: request.temperature,
@@ -178,6 +198,8 @@ Future<int> fllamaChat(
     logger: request.logger,
     eosToken: eosToken,
     openAiRequestJsonString: request.toJsonString(),
+    kvCacheTypeK: request.kvCacheTypeK,
+    kvCacheTypeV: request.kvCacheTypeV,
   );
 
   return fllamaInference(inferenceRequest, callback);

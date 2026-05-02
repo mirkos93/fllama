@@ -60,6 +60,15 @@ struct fllama_inference_request {
   fllama_log_callback
       dart_logger; // Optional: Dart caller logger. Defaults to NULL.
   char * openai_request_json_string; // Optional: OpenAI JSON string. Defaults to NULL.
+  // FLLAMA-PATCH: KV-cache quantization knobs.
+  // Optional ggml type name strings (e.g. "f16", "q8_0", "q4_0").
+  // NULL or empty means "use llama.cpp default" (f16). Tacita's
+  // RuntimePlanner picks `q8_0` on RAM-tight devices to roughly double
+  // effective context for ~3% perplexity. Allowed values match the
+  // upstream `--cache-type-k` flag: f32, f16, bf16, q8_0, q4_0, q4_1,
+  // iq4_nl, q5_0, q5_1.
+  char * kv_cache_type_k;
+  char * kv_cache_type_v;
 };
 
 EMSCRIPTEN_KEEPALIVE FFI_PLUGIN_EXPORT void fllama_inference(struct fllama_inference_request request,
