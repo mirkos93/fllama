@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:fllama/misc/openai_tool.dart';
 
@@ -22,14 +23,47 @@ enum Role {
   }
 }
 
+/// One image attached to a [Message].
+///
+/// The bytes are the raw, undecoded contents of an image file (PNG, JPEG,
+/// WebP, …). The native side decodes them via stb_image / mtmd, so any format
+/// supported by llama.cpp's mtmd helper is accepted.
+///
+/// [mimeType] is forwarded as the `data:<mime>;base64,...` prefix and is
+/// purely informational: the native decoder sniffs the magic bytes regardless.
+/// When omitted, defaults to `image/png`.
+class MessageImage {
+  final Uint8List bytes;
+  final String mimeType;
+
+  const MessageImage(this.bytes, {this.mimeType = 'image/png'});
+}
+
 class Message {
   final Role role;
   final String text;
+
   /// Optional name of tool in the message.
   final String? toolResponseName;
   final List<Map<String, dynamic>>? toolCalls;
 
-  Message(this.role, this.text, {this.toolCalls, this.toolResponseName});
+  /// Optional images attached to this message. When non-empty, the native
+  /// runtime feeds them to the multimodal projector (`mmprojPath` on the
+  /// owning [OpenAiRequest]). The model must be a vision-capable LLM and an
+  /// `mmprojPath` must be set, otherwise inference will fail with a clear
+  /// error.
+  ///
+  /// Order is preserved across the wire and follows OpenAI's `image_url`
+  /// content-part shape on the JSON the native side receives.
+  final List<MessageImage>? images;
+
+  Message(
+    this.role,
+    this.text, {
+    this.toolCalls,
+    this.toolResponseName,
+    this.images,
+  });
 }
 
 /// Corresponds to COMMON_CHAT_TOOL_CHOICE_* in llama.cpp.
@@ -71,22 +105,50 @@ class OpenAiRequest {
   final String? jinjaTemplate;
   final Function(String)? logger;
   final ToolChoice? toolChoice;
+  // Forwarded to the Jinja chat template as `enable_thinking`. Models
+  // with reasoning channels (Gemma 4, Qwen-3, etc.) emit a thought
+  // block when this is true. Set false to skip reasoning and stream
+  // the answer directly. Default true preserves prior behaviour.
+  final bool enableThinking;
 
   String toJsonString() {
     final Map<String, dynamic> json = {
-      'messages': messages
-          .map((m) => {
-                'role': m.role.openAiName,
-                // Avoid empty content, intent is when there's a tool call,
-                // but no text, in an assistant response, two messages are not
-                // created.
-                if (m.text.trim().isNotEmpty)
-                 'content': m.text,
-                if (m.toolResponseName != null) 'name': m.toolResponseName,
-                if (m.toolCalls?.isNotEmpty == true)
-                  'tool_calls': m.toolCalls
-              })
-          .toList(),
+      'messages': messages.map((m) {
+        final Map<String, dynamic> entry = {'role': m.role.openAiName};
+
+        final hasImages = m.images != null && m.images!.isNotEmpty;
+        final hasText = m.text.trim().isNotEmpty;
+
+        if (hasImages) {
+          // OpenAI multimodal content shape: an array of typed parts.
+          // The native side flattens this back into a text prompt with the
+          // existing fllama <img src="data:...;base64,..."> sentinel that the
+          // mtmd extractor recognises.
+          final parts = <Map<String, dynamic>>[];
+          if (hasText) {
+            parts.add({'type': 'text', 'text': m.text});
+          }
+          for (final img in m.images!) {
+            parts.add({
+              'type': 'image_url',
+              'image_url': {
+                'url':
+                    'data:${img.mimeType};base64,${base64Encode(img.bytes)}',
+              },
+            });
+          }
+          entry['content'] = parts;
+        } else if (hasText) {
+          // Backwards-compatible string content for text-only messages so we
+          // don't perturb the existing parser path or callers' diff baselines.
+          entry['content'] = m.text;
+        }
+        // else: tool-call-only assistant message — leave `content` unset.
+
+        if (m.toolResponseName != null) entry['name'] = m.toolResponseName;
+        if (m.toolCalls?.isNotEmpty == true) entry['tool_calls'] = m.toolCalls;
+        return entry;
+      }).toList(),
       'tools': tools.map((t) {
         return {
           'type': 'function',
@@ -104,6 +166,7 @@ class OpenAiRequest {
       'presence_penalty': presencePenalty,
       if (toolChoice != null) 'tool_choice': toolChoice?.jsonName,
       if (jinjaTemplate != null) 'jinja_template': jinjaTemplate,
+      'enable_thinking': enableThinking,
     };
     return jsonEncode(json);
   }
@@ -142,5 +205,8 @@ class OpenAiRequest {
     // Optional logger.
     this.logger,
     this.jinjaTemplate,
+    // Whether the Jinja template should enable the model's reasoning
+    // channel. Defaults to true (matches prior hardcoded behaviour).
+    this.enableThinking = true,
   });
 }

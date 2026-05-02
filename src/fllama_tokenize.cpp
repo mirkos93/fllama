@@ -6,6 +6,7 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "fllama_log.h"
 #include "llama.cpp/common/base64.hpp"
 #include "llama.cpp/common/common.h"
 #include "llama.cpp/common/sampling.h"
@@ -16,17 +17,20 @@
 std::shared_ptr<llama_model> _get_or_load_model(const std::string &model_path);
 // End tokenizer model caching predeclarations
 
-EMSCRIPTEN_KEEPALIVE FFI_PLUGIN_EXPORT extern "C" 
+EMSCRIPTEN_KEEPALIVE FFI_PLUGIN_EXPORT extern "C"
 size_t fllama_tokenize(struct fllama_tokenize_request request) {
 /* DISABLED: Model load logs.
   auto start_time_model_load = std::chrono::high_resolution_clock::now();
 */
-  llama_log_set(
-      [](enum ggml_log_level level, const char *text, void *user_data) {
-        // do nothing. intent is to avoid ~50 lines of log spam with model
-        // config when tokenizing
-      },
-      NULL);
+  // Install the global llama.cpp log handler (idempotent), then silence on
+  // this thread for the duration of the tokenize call. Previously this
+  // installed a global no-op handler, which permanently silenced ALL llama.cpp
+  // logs — including from concurrent inference, hiding load_model failures.
+  fllama_init_logging();
+  fllama_set_thread_log_silence(1);
+  struct SilenceGuard {
+    ~SilenceGuard() { fllama_set_thread_log_silence(0); }
+  } _silence_guard;
   // Model caching avoids O(100 ms) cost for every tokenize request.
   llama_model *model = _get_or_load_model(request.model_path).get();
   if (!model) {

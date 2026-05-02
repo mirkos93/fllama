@@ -72,6 +72,11 @@ if(NOT DEFINED LLAMA_INSTALL_VERSION OR LLAMA_INSTALL_VERSION STREQUAL "")
 endif()
 
 add_subdirectory("llama.cpp")
+# cpp-httplib must be added before common: starting with llama.cpp build b8665
+# (commit b8635075f), common/CMakeLists.txt unconditionally links the
+# cpp-httplib target. We don't ship the HTTP server, but common still
+# references httplib symbols at link time, so the target must be defined.
+add_subdirectory("llama.cpp/vendor/cpp-httplib")
 add_subdirectory("llama.cpp/common")
 add_subdirectory("llama.cpp/tools/mtmd")
 
@@ -101,6 +106,7 @@ add_library(fllama SHARED
   "fllama_download_stub.cpp"
   "fllama_eos.cpp"
   "fllama_inference_queue.cpp"
+  "fllama_log.cpp"
   "fllama_mtmd.cpp"
   "fllama_tokenize.cpp"
   "fllama.cpp"

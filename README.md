@@ -81,6 +81,24 @@ fllamaChat(request, (response, done) {
 ### Web
   Web is __extremely__ slow, ex. on a MBP M2 Max with 64 VRAM, it does ~2 tokens/second with a 3B parameter model. It's best seen as validation for your users that you will strive to support free LLMs everywhere.
   To install: copy the fllama_wasm* files from `example/web` to your app's `web` directory, then add the `<script>` tag in `example/web/index.html`.
+### Supported model architectures
+  This fork pins llama.cpp at `b8635075f` (build `b8665`, 2026-04-04). All
+  architectures supported by that build load. Highlights for recent on-device
+  models:
+
+  | Family    | Architecture(s)                                  | Notes                              |
+  |-----------|--------------------------------------------------|-----------------------------------|
+  | Gemma     | `gemma`, `gemma2`, `gemma3`, `gemma3n`, `gemma4` | `gemma4` requires this fork.       |
+  | Qwen      | `qwen`, `qwen2`, `qwen2moe`, `qwen2vl`, `qwen3`, `qwen3moe`, `qwen3next`, `qwen3vl`, `qwen3vlmoe`, `qwen35`, `qwen35moe` |                                   |
+  | Llama     | `llama`, `llama4`                                | Llama 3 GGUFs report as `llama`.   |
+  | Phi       | `phi2`, `phi3`, `phimoe`                         |                                   |
+  | Mistral   | via `llama` arch                                 | Most Mistral GGUFs use `llama`.    |
+
+  Test GGUFs used during development:
+  - Gemma 4 E2B IT Q4_K_M — https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF
+  - Gemma 4 E4B IT Q4_K_M — https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF
+  - Gemma 3n E2B IT Q4_K_M — https://huggingface.co/unsloth/gemma-3n-E2B-it-GGUF (regression baseline)
+
 ### Recommended models
   3 top-tier open models are in the [fllama HuggingFace repo](https://huggingface.co/telosnex/fllama/tree/main).
   - __Stable LM 3B__ is the first LLM model that can handle RAG, using documents such as web pages to answer a query, on *all* devices. 

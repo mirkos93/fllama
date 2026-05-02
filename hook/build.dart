@@ -254,8 +254,8 @@ Map<String, String> _computeDefines(OS targetOS) {
     'LLAMA_BUILD_SERVER': 'OFF',
     'LLAMA_BUILD_TESTS': 'OFF',
     'LLAMA_BUILD_EXAMPLES': 'OFF',
-    'LLAMA_BUILD_NUMBER': '1',
-    'LLAMA_BUILD_COMMIT': 'unknown',
+    'LLAMA_BUILD_NUMBER': '8665',
+    'LLAMA_BUILD_COMMIT': 'b8635075f',
   };
 
   // Apple (macOS + iOS): Metal GPU, no OpenMP.

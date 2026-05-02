@@ -6,6 +6,7 @@
 
 #include "fllama.h"
 #include "fllama_inference_queue.h"
+#include "fllama_log.h"
 #include "fllama_mtmd.h"
 
 // server-context headers (no HTTP / httplib dependency)
@@ -68,6 +69,9 @@ static std::once_flag  g_backend_init;
 
 static void fllama_backend_init_once() {
   std::call_once(g_backend_init, [] {
+    // Install the global llama.cpp log handler before backend init so we
+    // capture the very first GGML / Metal / CPU-feature messages.
+    fllama_init_logging();
     ggml_backend_load_all();
     llama_backend_init();
   });
@@ -101,6 +105,15 @@ static void fllama_copy_cstr(char * dst, size_t cap, const char * src) {
 
 static void run_inference(fllama_inference_request request,
                           fllama_inference_callback callback) {
+  // Route llama.cpp's internal logs (GGML / model load / KV cache, etc.) to
+  // this request's dart_logger for the duration of the call. Without this,
+  // a load_model failure surfaces only as the opaque "Failed to create
+  // inference context" with the real reason swallowed.
+  fllama_set_thread_logger(request.dart_logger);
+  struct LoggerGuard {
+    ~LoggerGuard() { fllama_set_thread_logger(nullptr); }
+  } _logger_guard;
+
   try {
     int64_t t0 = ggml_time_ms();
     log_message("[fllama] Inference start", request.dart_logger);
@@ -192,6 +205,68 @@ static void run_inference(fllama_inference_request request,
         }
 
         if (body.contains("messages") && body["messages"].is_array()) {
+          // Flatten OpenAI-style multimodal content arrays back into the
+          // single-string content the upstream parser accepts. Each
+          // `image_url` part is appended to the running text as the
+          // <img src="data:...;base64,..."> sentinel that
+          // fllama_extract_images() picks up after templating.
+          //
+          // Refusing images without a configured mmproj here produces a
+          // clear error rather than letting the model silently ignore the
+          // pixels (the prompt would still contain an opaque marker the
+          // model can't interpret).
+          bool has_image_parts = false;
+          auto & msgs_json = body["messages"];
+          for (auto & message : msgs_json) {
+            if (!message.is_object()) continue;
+            if (!message.contains("content")) continue;
+            auto & content = message["content"];
+            if (!content.is_array()) continue;
+
+            std::string flattened;
+            for (const auto & part : content) {
+              if (!part.is_object() || !part.contains("type")) continue;
+              const std::string ptype = part.at("type").get<std::string>();
+              if (ptype == "text" && part.contains("text") && part.at("text").is_string()) {
+                if (!flattened.empty()) flattened += "\n";
+                flattened += part.at("text").get<std::string>();
+              } else if (ptype == "image_url" && part.contains("image_url")) {
+                const auto & iu = part.at("image_url");
+                if (!iu.is_object() || !iu.contains("url") || !iu.at("url").is_string()) {
+                  continue;
+                }
+                const std::string url = iu.at("url").get<std::string>();
+                // Only data: URLs are supported on-device. Reject http(s).
+                if (url.rfind("data:", 0) != 0) {
+                  log_message("[fllama] Skipping non-data: image_url (only "
+                              "inline base64 supported)",
+                              request.dart_logger);
+                  continue;
+                }
+                if (!flattened.empty()) flattened += "\n";
+                flattened += "<img src=\"";
+                flattened += url;
+                flattened += "\">";
+                has_image_parts = true;
+              }
+              // media_marker / unknown types: ignored. The upstream parser
+              // would have rejected them anyway.
+            }
+            content = flattened;
+          }
+
+          if (has_image_parts &&
+              (!request.model_mmproj_path ||
+               strlen(request.model_mmproj_path) == 0)) {
+            callback("Error: image content provided but no mmproj path set "
+                     "on the request — vision requires a multimodal projector "
+                     "(.mmproj.gguf).",
+                     "", true);
+            g_mgr.clear_cancel(request.request_id);
+            g_mgr.unregister_request_thread(request.request_id);
+            return;
+          }
+
           common_chat_templates_inputs inputs;
           inputs.use_jinja = true;
           inputs.add_generation_prompt = true;
@@ -206,6 +281,9 @@ static void run_inference(fllama_inference_request request,
           if (body.contains("reasoning_format") && body["reasoning_format"].is_string()) {
             inputs.reasoning_format = common_reasoning_format_from_name(
                 body["reasoning_format"].get<std::string>());
+          }
+          if (body.contains("enable_thinking") && body["enable_thinking"].is_boolean()) {
+            inputs.enable_thinking = body["enable_thinking"].get<bool>();
           }
 
           if (body.contains("tools")) {

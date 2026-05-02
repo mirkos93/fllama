@@ -15,6 +15,31 @@ late final SharedPreferences kSharedPrefs;
 const String kModelPathKey = 'modelPath';
 const String kMmprojPathKey = 'mmprojPath';
 
+class _TestModel {
+  const _TestModel(this.label, this.url, this.sha256);
+  final String label;
+  final String url;
+  final String sha256;
+}
+
+const List<_TestModel> kTestModels = [
+  _TestModel(
+    'Gemma 4 E2B IT Q4_K_M (~2.9 GiB)',
+    'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf',
+    'ac0069ebccd39925d836f24a88c0f0c858d20578c29b21ab7cedce66ee576845',
+  ),
+  _TestModel(
+    'Gemma 4 E4B IT Q4_K_M (~4.6 GiB)',
+    'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf',
+    'dff0ffba4c90b4082d70214d53ce9504a28d4d8d998276dcb3b8881a656c742a',
+  ),
+  _TestModel(
+    'Gemma 3n E2B IT Q4_K_M (regression baseline)',
+    'https://huggingface.co/unsloth/gemma-3n-E2B-it-GGUF/resolve/main/gemma-3n-E2B-it-Q4_K_M.gguf',
+    '189d42b4303cb1078ea8d00963f437cd6d884069b7ba2ba80b38cd09585dc415',
+  ),
+];
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   kSharedPrefs = await SharedPreferences.getInstance();
@@ -93,6 +118,12 @@ class _MyAppState extends State<MyApp> {
                           onPressed: _openGgufPressed,
                           icon: const Icon(Icons.file_open),
                           label: const Text('Open .gguf'),
+                        ),
+                        const SizedBox(width: 8),
+                        TextButton.icon(
+                          onPressed: () => _showTestModelsDialog(context),
+                          icon: const Icon(Icons.science),
+                          label: const Text('Test models'),
                         ),
                         if (_modelPath != null)
                           Padding(
@@ -578,12 +609,17 @@ class _MyAppState extends State<MyApp> {
       ScaffoldMessenger.of(context).showSnackBar(snackBar);
       return;
     }
-    var messageText = _controller.text;
+    final messageText = _controller.text;
     final isMultimodal = _mmprojPath != null;
-    if (isMultimodal && _imageBytes != null) {
-      messageText =
-          '<img src="data:image/jpeg;base64,${base64Encode(_imageBytes!)}">\n\n$messageText';
-    }
+    // F8 vision smoke-test: prefer the structured Message.images API so the
+    // native side flattens the image_url content parts itself. The legacy
+    // inline `<img src="data:...;base64,...">` text path still works.
+    final List<MessageImage>? messageImages =
+        (isMultimodal && _imageBytes != null)
+            ? <MessageImage>[
+                MessageImage(_imageBytes!, mimeType: 'image/jpeg'),
+              ]
+            : null;
     // 2 choices:
     // 1. Inference directly. Chat template is *not* applied.
     //    A chat template defines start/end sigils for
@@ -630,7 +666,7 @@ class _MyAppState extends State<MyApp> {
       ],
       maxTokens: _maxTokens.round(),
       messages: [
-        Message(Role.user, messageText),
+        Message(Role.user, messageText, images: messageImages),
       ],
       numGpuLayers: 99,
       /* this seems to have no adverse effects in environments w/o GPU support, ex. Android and web */
@@ -777,6 +813,53 @@ class _MyAppState extends State<MyApp> {
     setState(() {
       _mmprojPath = filePath;
     });
+  }
+
+  void _showTestModelsDialog(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Test models'),
+        content: SizedBox(
+          width: 600,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Download a .gguf to your device, then tap "Open .gguf" to load it.',
+                style: TextStyle(fontSize: 13),
+              ),
+              const SizedBox(height: 8),
+              ...kTestModels.map(
+                (m) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(m.label,
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
+                      SelectableText(m.url,
+                          style: const TextStyle(
+                              fontFamily: 'monospace', fontSize: 12)),
+                      SelectableText('sha256: ${m.sha256}',
+                          style: const TextStyle(
+                              fontFamily: 'monospace', fontSize: 11)),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _openImagePressed() async {
