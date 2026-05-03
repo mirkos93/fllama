@@ -126,6 +126,24 @@ class OpenAiRequest {
   /// Same allowed values as [kvCacheTypeK].
   final String? kvCacheTypeV;
 
+  /// FLLAMA-PATCH (Phase C / Tacita): CCv2/v3 `post_history_instructions`
+  /// content. When set, the native Jinja chat-template renderer is
+  /// expected to inject this string as a system / user row AFTER the
+  /// chat history's last message and BEFORE the open assistant turn —
+  /// per CCv2/v3 spec §post_history_instructions.
+  ///
+  /// **Currently a NO-OP on the native side**: the Jinja renderer in
+  /// `src/fllama.cpp` does not yet read this field. The Dart-side
+  /// raw-prompt code path (`RawPromptBuilder.postHistoryTail`) honours
+  /// the spec position today. A future `src/fllama.cpp` patch will
+  /// promote the chat-completion path to spec parity.
+  ///
+  /// Hosts that don't need PHI placement leave this null and pay no
+  /// cost. The field is JSON-serialised as `post_history_tail` for
+  /// the upcoming native handler — Tacita pins the JSON shape now so
+  /// the Dart wire format doesn't churn when the native side lands.
+  final String? postHistoryTail;
+
   String toJsonString() {
     final Map<String, dynamic> json = {
       'messages': messages.map((m) {
@@ -182,6 +200,13 @@ class OpenAiRequest {
       if (toolChoice != null) 'tool_choice': toolChoice?.jsonName,
       if (jinjaTemplate != null) 'jinja_template': jinjaTemplate,
       'enable_thinking': enableThinking,
+      // FLLAMA-PATCH (Phase C): pin the wire format for the upcoming
+      // native PHI tail injector. Today the field is unused by
+      // `src/fllama.cpp` — the Dart raw-prompt path (`RawPromptBuilder`)
+      // is the spec-compliant surface. Setting `postHistoryTail` here
+      // is harmless when null.
+      if (postHistoryTail != null && postHistoryTail!.isNotEmpty)
+        'post_history_tail': postHistoryTail,
     };
     return jsonEncode(json);
   }
@@ -227,5 +252,6 @@ class OpenAiRequest {
     this.numThreads = 0,
     this.kvCacheTypeK,
     this.kvCacheTypeV,
+    this.postHistoryTail,
   });
 }
