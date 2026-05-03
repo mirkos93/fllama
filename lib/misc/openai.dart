@@ -97,6 +97,43 @@ class OpenAiRequest {
   final double topP;
   final double frequencyPenalty;
   final double presencePenalty;
+  // FLLAMA-PATCH (Phase 1 — Tech, roleplay): extended chat-path sampler
+  // surface. Every field below is forwarded into
+  // `task.params.sampling.<...>` in `src/fllama.cpp`'s chat handler.
+  // All defaults match the upstream `common_params_sampling` defaults
+  // so a host that ignores them gets identical behaviour to the
+  // pre-patch build.
+  //
+  // These fields close the "silently dropped" gap on the chat path —
+  // before this patch only `temperature`, `topP`, `frequencyPenalty`
+  // and `presencePenalty` reached the sampler. min_p / top_k /
+  // mirostat / dynatemp / seed / DRY / XTC / penalty_last_n /
+  // top_n_sigma / min_keep / logit_bias all defaulted to the C++
+  // hardcoded defaults regardless of what the host requested.
+  final double minP;
+  final int topK;
+  final int penaltyLastN;
+  final int mirostat;
+  final double mirostatTau;
+  final double mirostatEta;
+  final double dynatempRange;
+  final double dynatempExponent;
+  final double topNSigma;
+  final int minKeep;
+  final int? seed;
+  // DRY (Don't Repeat Yourself) — community-#1 anti-repetition primitive.
+  // Defaults to OFF (multiplier 0.0). Enable with multiplier 0.8 for RP.
+  final double dryMultiplier;
+  final double dryBase;
+  final int dryAllowedLength;
+  final int dryPenaltyLastN;
+  // XTC (Exclude Top Choices) — defaults OFF (probability 0.0).
+  final double xtcProbability;
+  final double xtcThreshold;
+  // Logit bias map: token id -> additive bias (typically large negative
+  // to ban a token). C++ side accumulates into
+  // `params.sampling.logit_bias`. Empty map = no bias = no-op.
+  final Map<int, double> logitBias;
   // Not in OpenAI, but used by llama.
   final String modelPath;
   final String? mmprojPath;
@@ -197,6 +234,30 @@ class OpenAiRequest {
       'top_p': topP,
       'frequency_penalty': frequencyPenalty,
       'presence_penalty': presencePenalty,
+      // FLLAMA-PATCH (Phase 1 — roleplay samplers). All keys match the
+      // names llama.cpp's server uses internally so the chat-path
+      // handler in `src/fllama.cpp` can copy them verbatim.
+      'min_p': minP,
+      'top_k': topK,
+      'penalty_last_n': penaltyLastN,
+      'mirostat': mirostat,
+      'mirostat_tau': mirostatTau,
+      'mirostat_eta': mirostatEta,
+      'dynatemp_range': dynatempRange,
+      'dynatemp_exponent': dynatempExponent,
+      'top_n_sigma': topNSigma,
+      'min_keep': minKeep,
+      if (seed != null) 'seed': seed,
+      'dry_multiplier': dryMultiplier,
+      'dry_base': dryBase,
+      'dry_allowed_length': dryAllowedLength,
+      'dry_penalty_last_n': dryPenaltyLastN,
+      'xtc_probability': xtcProbability,
+      'xtc_threshold': xtcThreshold,
+      if (logitBias.isNotEmpty)
+        'logit_bias': [
+          for (final entry in logitBias.entries) [entry.key, entry.value],
+        ],
       if (toolChoice != null) 'tool_choice': toolChoice?.jsonName,
       if (jinjaTemplate != null) 'jinja_template': jinjaTemplate,
       'enable_thinking': enableThinking,
@@ -253,5 +314,26 @@ class OpenAiRequest {
     this.kvCacheTypeK,
     this.kvCacheTypeV,
     this.postHistoryTail,
+    // FLLAMA-PATCH: roleplay samplers. Defaults mirror upstream
+    // `common_params_sampling` so behaviour is identical when the host
+    // doesn't override.
+    this.minP = 0.05,
+    this.topK = 40,
+    this.penaltyLastN = 64,
+    this.mirostat = 0,
+    this.mirostatTau = 5.0,
+    this.mirostatEta = 0.1,
+    this.dynatempRange = 0.0,
+    this.dynatempExponent = 1.0,
+    this.topNSigma = -1.0,
+    this.minKeep = 0,
+    this.seed,
+    this.dryMultiplier = 0.0,
+    this.dryBase = 1.75,
+    this.dryAllowedLength = 2,
+    this.dryPenaltyLastN = -1,
+    this.xtcProbability = 0.0,
+    this.xtcThreshold = 0.1,
+    this.logitBias = const <int, double>{},
   });
 }

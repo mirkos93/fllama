@@ -391,8 +391,129 @@ static void run_inference(fllama_inference_request request,
     task.params.sampling.penalty_freq   = request.penalty_freq;
     task.params.sampling.penalty_repeat = request.penalty_repeat;
 
-    std::random_device rd;
-    task.params.sampling.seed = rd();
+    // FLLAMA-PATCH (Phase 1 — roleplay samplers). Pull the extended
+    // sampler surface out of the OAI JSON body. Every key mirrors
+    // llama.cpp's `common_params_sampling` field name so the same JSON
+    // shape works against an upstream llama-server. Missing keys leave
+    // the sampler on the upstream default. The `min_p` forwarding here
+    // closes the silently-dropped bug — the chat path was previously
+    // pinned to llama.cpp's hardcoded 0.05 regardless of host intent.
+    if (is_oai && request.openai_request_json_string) {
+      try {
+        auto body = nlohmann::ordered_json::parse(
+            request.openai_request_json_string);
+        if (body.contains("min_p") && body["min_p"].is_number()) {
+          task.params.sampling.min_p = body["min_p"].get<float>();
+        }
+        if (body.contains("top_k") && body["top_k"].is_number()) {
+          task.params.sampling.top_k = body["top_k"].get<int32_t>();
+        }
+        if (body.contains("penalty_last_n") &&
+            body["penalty_last_n"].is_number()) {
+          task.params.sampling.penalty_last_n =
+              body["penalty_last_n"].get<int32_t>();
+        }
+        if (body.contains("mirostat") && body["mirostat"].is_number()) {
+          task.params.sampling.mirostat = body["mirostat"].get<int32_t>();
+        }
+        if (body.contains("mirostat_tau") &&
+            body["mirostat_tau"].is_number()) {
+          task.params.sampling.mirostat_tau =
+              body["mirostat_tau"].get<float>();
+        }
+        if (body.contains("mirostat_eta") &&
+            body["mirostat_eta"].is_number()) {
+          task.params.sampling.mirostat_eta =
+              body["mirostat_eta"].get<float>();
+        }
+        if (body.contains("dynatemp_range") &&
+            body["dynatemp_range"].is_number()) {
+          task.params.sampling.dynatemp_range =
+              body["dynatemp_range"].get<float>();
+        }
+        if (body.contains("dynatemp_exponent") &&
+            body["dynatemp_exponent"].is_number()) {
+          task.params.sampling.dynatemp_exponent =
+              body["dynatemp_exponent"].get<float>();
+        }
+        if (body.contains("top_n_sigma") &&
+            body["top_n_sigma"].is_number()) {
+          task.params.sampling.top_n_sigma =
+              body["top_n_sigma"].get<float>();
+        }
+        if (body.contains("min_keep") && body["min_keep"].is_number()) {
+          task.params.sampling.min_keep = body["min_keep"].get<int32_t>();
+        }
+        if (body.contains("dry_multiplier") &&
+            body["dry_multiplier"].is_number()) {
+          task.params.sampling.dry_multiplier =
+              body["dry_multiplier"].get<float>();
+        }
+        if (body.contains("dry_base") && body["dry_base"].is_number()) {
+          task.params.sampling.dry_base = body["dry_base"].get<float>();
+        }
+        if (body.contains("dry_allowed_length") &&
+            body["dry_allowed_length"].is_number()) {
+          task.params.sampling.dry_allowed_length =
+              body["dry_allowed_length"].get<int32_t>();
+        }
+        if (body.contains("dry_penalty_last_n") &&
+            body["dry_penalty_last_n"].is_number()) {
+          task.params.sampling.dry_penalty_last_n =
+              body["dry_penalty_last_n"].get<int32_t>();
+        }
+        if (body.contains("xtc_probability") &&
+            body["xtc_probability"].is_number()) {
+          task.params.sampling.xtc_probability =
+              body["xtc_probability"].get<float>();
+        }
+        if (body.contains("xtc_threshold") &&
+            body["xtc_threshold"].is_number()) {
+          task.params.sampling.xtc_threshold =
+              body["xtc_threshold"].get<float>();
+        }
+        // logit_bias: array of [token_id, bias] pairs. Each pair
+        // becomes a `llama_logit_bias` entry. Upstream llama-server
+        // also accepts strings (resolved to token ids), but the
+        // host-side mapping is more reliable than parsing here.
+        if (body.contains("logit_bias") && body["logit_bias"].is_array()) {
+          for (const auto & entry : body["logit_bias"]) {
+            if (!entry.is_array() || entry.size() != 2) continue;
+            if (!entry[0].is_number()) continue;
+            if (!entry[1].is_number()) continue;
+            llama_logit_bias lb;
+            lb.token = entry[0].get<llama_token>();
+            lb.bias  = entry[1].get<float>();
+            task.params.sampling.logit_bias.push_back(lb);
+          }
+        }
+      } catch (const std::exception & e) {
+        log_message(std::string("[fllama] sampler parse error: ") + e.what(),
+                    request.dart_logger);
+      }
+    }
+
+    // Seed: prefer host-supplied value (for reproducibility tests),
+    // otherwise pin a fresh one per task so successive generations don't
+    // collide on the same RNG state.
+    bool host_seed_set = false;
+    if (is_oai && request.openai_request_json_string) {
+      try {
+        auto body = nlohmann::ordered_json::parse(
+            request.openai_request_json_string);
+        if (body.contains("seed") && body["seed"].is_number_integer()) {
+          task.params.sampling.seed =
+              body["seed"].get<uint32_t>();
+          host_seed_set = true;
+        }
+      } catch (...) {
+        // Already logged above; fall through to random.
+      }
+    }
+    if (!host_seed_set) {
+      std::random_device rd;
+      task.params.sampling.seed = rd();
+    }
 
     if (is_oai) {
       task.params.res_type           = TASK_RESPONSE_TYPE_OAI_CHAT;
