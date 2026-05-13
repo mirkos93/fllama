@@ -20,6 +20,9 @@ set(LLAMA_CURL OFF CACHE BOOL "Disable CURL (deprecated)" FORCE)
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "Disable server (requires httplib)" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "Disable tests" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "Disable examples" FORCE)
+set(LLAMA_OPENSSL OFF CACHE BOOL "Disable OpenSSL/HTTPS in cpp-httplib" FORCE)
+set(LLAMA_BUILD_BORINGSSL OFF CACHE BOOL "Disable BoringSSL in cpp-httplib" FORCE)
+set(LLAMA_BUILD_LIBRESSL OFF CACHE BOOL "Disable LibreSSL in cpp-httplib" FORCE)
 
 if(ANDROID)
     # Debug: Print build information for Android
