@@ -32,6 +32,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #include "ggml-backend.h"
 
 // ── Logging ──────────────────────────────────────────────────────────────────
@@ -151,10 +155,19 @@ static void run_inference(fllama_inference_request request,
     common_params params;
     params.model.path       = request.model_path;
     params.n_ctx            = request.context_size;
+#if TARGET_OS_IPHONE
+    // iPhone/iPad: smaller prompt-processing batches reduce Metal
+    // compute-buffer spikes and leave the Flutter UI responsive under
+    // memory pressure. This is a smoothness trade-off, not a throughput
+    // win: long prompt ingestion can be slower, but the app remains usable.
+    params.n_batch          = std::min<int32_t>(request.context_size, 1024);
+    params.n_ubatch         = std::min<int32_t>(params.n_batch, 128);
+#else
     // Match llama.cpp server defaults more closely instead of tying batch
     // sizes to the full context window.
     params.n_batch          = std::min<int32_t>(request.context_size, 2048);
     params.n_ubatch         = std::min<int32_t>(params.n_batch, 512);
+#endif
     params.flash_attn_type  = LLAMA_FLASH_ATTN_TYPE_AUTO;
     params.n_parallel       = ServerManager::DEFAULT_N_PARALLEL;
     params.n_predict        = request.max_tokens;
