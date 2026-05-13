@@ -202,8 +202,7 @@ class OpenAiRequest {
             parts.add({
               'type': 'image_url',
               'image_url': {
-                'url':
-                    'data:${img.mimeType};base64,${base64Encode(img.bytes)}',
+                'url': 'data:${img.mimeType};base64,${base64Encode(img.bytes)}',
               },
             });
           }
@@ -261,6 +260,7 @@ class OpenAiRequest {
       if (toolChoice != null) 'tool_choice': toolChoice?.jsonName,
       if (jinjaTemplate != null) 'jinja_template': jinjaTemplate,
       'enable_thinking': enableThinking,
+      'chat_template_kwargs': {'enable_thinking': enableThinking},
       // FLLAMA-PATCH (Phase C): pin the wire format for the upcoming
       // native PHI tail injector. Today the field is unused by
       // `src/fllama.cpp` — the Dart raw-prompt path (`RawPromptBuilder`)

@@ -317,6 +317,23 @@ static void run_inference(fllama_inference_request request,
           if (body.contains("enable_thinking") && body["enable_thinking"].is_boolean()) {
             inputs.enable_thinking = body["enable_thinking"].get<bool>();
           }
+          inputs.chat_template_kwargs["enable_thinking"] =
+              inputs.enable_thinking ? "true" : "false";
+          if (body.contains("chat_template_kwargs") &&
+              body["chat_template_kwargs"].is_object()) {
+            for (const auto & item : body["chat_template_kwargs"].items()) {
+              inputs.chat_template_kwargs[item.key()] = item.value().dump();
+            }
+            auto enable_thinking_kwarg =
+                inputs.chat_template_kwargs.find("enable_thinking");
+            if (enable_thinking_kwarg != inputs.chat_template_kwargs.end()) {
+              if (enable_thinking_kwarg->second == "true") {
+                inputs.enable_thinking = true;
+              } else if (enable_thinking_kwarg->second == "false") {
+                inputs.enable_thinking = false;
+              }
+            }
+          }
 
           if (body.contains("tools")) {
             inputs.tools =
@@ -332,6 +349,15 @@ static void run_inference(fllama_inference_request request,
           auto result =
               common_chat_templates_apply(tmpls.get(), inputs);
           prompt = result.prompt;
+          if (!inputs.enable_thinking) {
+            const std::string empty_gemma4_thought =
+                "<|channel>thought\n<channel|>";
+            size_t pos = std::string::npos;
+            while ((pos = prompt.find(empty_gemma4_thought)) !=
+                   std::string::npos) {
+              prompt.erase(pos, empty_gemma4_thought.size());
+            }
+          }
           parser_params = common_chat_parser_params(result);
           parser_params.reasoning_format = inputs.reasoning_format;
           parser_params.reasoning_in_content =
