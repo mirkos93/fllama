@@ -164,6 +164,46 @@ class FllamaBindings {
           'fllama_tokenize');
   late final _fllama_tokenize =
       _fllama_tokenizePtr.asFunction<int Function(fllama_tokenize_request)>();
+
+  // ── FLLAMA-PATCH (Tacita D-2): embedding API ────────────────────────────
+  void fllama_embed(
+    fllama_embed_request request,
+    fllama_embed_callback callback,
+  ) {
+    return _fllama_embed(request, callback);
+  }
+
+  late final _fllama_embedPtr = _lookup<
+      ffi.NativeFunction<
+          ffi.Void Function(
+              fllama_embed_request, fllama_embed_callback)>>('fllama_embed');
+  late final _fllama_embed = _fllama_embedPtr
+      .asFunction<void Function(fllama_embed_request, fllama_embed_callback)>();
+
+  void fllama_embed_sync(
+    fllama_embed_request request,
+    fllama_embed_callback callback,
+  ) {
+    return _fllama_embed_sync(request, callback);
+  }
+
+  late final _fllama_embed_syncPtr = _lookup<
+          ffi.NativeFunction<
+              ffi.Void Function(
+                  fllama_embed_request, fllama_embed_callback)>>(
+      'fllama_embed_sync');
+  late final _fllama_embed_sync = _fllama_embed_syncPtr
+      .asFunction<void Function(fllama_embed_request, fllama_embed_callback)>();
+
+  void fllama_embed_cancel(int request_id) {
+    return _fllama_embed_cancel(request_id);
+  }
+
+  late final _fllama_embed_cancelPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int)>>(
+          'fllama_embed_cancel');
+  late final _fllama_embed_cancel =
+      _fllama_embed_cancelPtr.asFunction<void Function(int)>();
 }
 
 final class fllama_gpu_memory_info extends ffi.Struct {
@@ -278,3 +318,41 @@ final class fllama_tokenize_request extends ffi.Struct {
   /// Required: .ggml model file path
   external ffi.Pointer<ffi.Char> model_path;
 }
+
+// ── FLLAMA-PATCH (Tacita D-2): embedding API ──────────────────────────────
+
+final class fllama_embed_request extends ffi.Struct {
+  @ffi.Int()
+  external int request_id;
+
+  external ffi.Pointer<ffi.Char> input;
+
+  external ffi.Pointer<ffi.Char> model_path;
+
+  @ffi.Int()
+  external int num_gpu_layers;
+
+  @ffi.Int()
+  external int num_threads;
+
+  @ffi.Int()
+  external int context_size;
+
+  /// Mirrors `enum llama_pooling_type`:
+  /// -1 = UNSPECIFIED, 0 = NONE, 1 = MEAN, 2 = CLS, 3 = LAST.
+  @ffi.Int32()
+  external int pooling_type;
+
+  /// Mirrors llama-server's `--embd-normalize`:
+  /// -1 = none, 0 = max-abs, 1 = taxicab/L1, 2 = euclidean/L2 (default).
+  @ffi.Int32()
+  external int embd_normalize;
+
+  /// Optional Dart logger.
+  external fllama_log_callback dart_logger;
+}
+
+typedef fllama_embed_callback = ffi.Pointer<
+    ffi.NativeFunction<
+        ffi.Void Function(ffi.Pointer<ffi.Float> embedding_floats,
+            ffi.Int32 n_embd, ffi.Pointer<ffi.Char> error_message)>>;

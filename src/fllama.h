@@ -22,6 +22,17 @@ extern "C" {
 typedef void (*fllama_inference_callback)(const char *response, const char * openai_response_json_string, uint8_t done);
 typedef void (*fllama_log_callback)(const char *);
 
+// FLLAMA-PATCH (Tacita T-RECALL-EMBED-ENGINE / D-2): embedding callback.
+// `embedding_floats` is a borrowed pointer valid only for the duration
+// of the call; the Dart side must copy the bytes before returning.
+// `n_embd` is the per-token embedding dimensionality (e.g. 768 for
+// EmbeddingGemma 300M) and equals the length of [embedding_floats].
+// `error_message` is NULL on success and a NUL-terminated C string on
+// failure (in which case [embedding_floats] is NULL and [n_embd] is 0).
+typedef void (*fllama_embed_callback)(const float * embedding_floats,
+                                      int32_t n_embd,
+                                      const char * error_message);
+
 struct fllama_gpu_memory_info {
   int32_t device_index;
   uint64_t total_bytes;
@@ -76,6 +87,51 @@ EMSCRIPTEN_KEEPALIVE FFI_PLUGIN_EXPORT void fllama_inference(struct fllama_infer
 EMSCRIPTEN_KEEPALIVE FFI_PLUGIN_EXPORT void fllama_inference_sync(struct fllama_inference_request request,
                            fllama_inference_callback callback);
 EMSCRIPTEN_KEEPALIVE FFI_PLUGIN_EXPORT void fllama_inference_cancel(int request_id);
+
+// ── Embedding API (FLLAMA-PATCH, Tacita D-2) ──────────────────────────────
+//
+// Encodes [input] with the model at [model_path] and invokes [callback]
+// once with the L2-normalised, sequence-pooled embedding vector. The
+// model must have a pooling type set (LAST / MEAN / CLS); models built
+// for generation only (`pooling_type == LLAMA_POOLING_TYPE_NONE`) will
+// fail with an error.
+//
+// `pooling_type`:
+//   -1 = LLAMA_POOLING_TYPE_UNSPECIFIED (let the GGUF declare it; this
+//        is the right choice for EmbeddingGemma, whose metadata pins
+//        MEAN pooling, and for any embedding-trained GGUF).
+//    0 = NONE (per-token output, NOT supported by this entry point).
+//    1 = MEAN, 2 = CLS, 3 = LAST. See `enum llama_pooling_type`.
+//
+// `embd_normalize` matches llama-server's `--embd-normalize`:
+//   -1 = none, 0 = max-absolute int16 scale, 1 = taxicab/L1,
+//    2 = euclidean/L2 (recommended for cosine similarity),
+//   >2 = p-norm.
+//
+// Context lifetime: a dedicated `server_context` is created per model
+// path and cached for [MODEL_INACTIVITY_TIMEOUT_SEC] after the last
+// embedding call (same cache machinery as the chat path; eviction is
+// independent because the `n_parallel` / pooling-type params differ
+// from a generative load and `params_match()` rejects reuse).
+struct fllama_embed_request {
+  int request_id;        // Required: unique ID for the request.
+  char * input;          // Required: NUL-terminated text to embed.
+  char * model_path;     // Required: path to a .gguf embedding model.
+  int num_gpu_layers;    // 0 for CPU only, 99 for all layers.
+  int num_threads;       // 0 = let llama.cpp pick from device cores.
+  int context_size;      // Required: max tokens per embedding batch.
+                         // Tacita uses 2048 for EmbeddingGemma (the
+                         // model's native max is 2048).
+  int32_t pooling_type;  // See enum above (-1 = unspecified/default).
+  int32_t embd_normalize;// See enum above (2 = L2 normalise).
+  fllama_log_callback dart_logger; // Optional.
+};
+
+EMSCRIPTEN_KEEPALIVE FFI_PLUGIN_EXPORT void fllama_embed(struct fllama_embed_request request,
+                                                        fllama_embed_callback callback);
+EMSCRIPTEN_KEEPALIVE FFI_PLUGIN_EXPORT void fllama_embed_sync(struct fllama_embed_request request,
+                                                              fllama_embed_callback callback);
+EMSCRIPTEN_KEEPALIVE FFI_PLUGIN_EXPORT void fllama_embed_cancel(int request_id);
 
 // GPU device information.
 // Returns the number of GPU devices visible to ggml/llama.cpp.

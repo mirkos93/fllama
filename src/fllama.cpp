@@ -739,4 +739,215 @@ fllama_inference_cancel(int request_id) {
   g_mgr.cancel(request_id);
 }
 
+// ── Embedding entry point (FLLAMA-PATCH, Tacita D-2) ─────────────────────
+
+static void run_embedding(fllama_embed_request request,
+                          fllama_embed_callback callback) {
+  fllama_set_thread_logger(request.dart_logger);
+  struct LoggerGuard {
+    ~LoggerGuard() { fllama_set_thread_logger(nullptr); }
+  } _logger_guard;
+
+  try {
+    int64_t t0 = ggml_time_ms();
+    log_message("[fllama.embed] start", request.dart_logger);
+
+    fllama_backend_init_once();
+
+    // ── Build common_params for an embedding context ────────────────
+    common_params params;
+    params.model.path       = request.model_path ? request.model_path : "";
+    params.n_ctx            = request.context_size > 0 ? request.context_size
+                                                       : 2048;
+
+    // Embeddings require all tokens to be processed in a single ubatch
+    // (BERT-style non-causal attention). Match n_batch + n_ubatch to
+    // the context size so a 2048-token sentence fits in one decode.
+    params.n_batch          = params.n_ctx;
+    params.n_ubatch         = params.n_ctx;
+
+    params.flash_attn_type  = LLAMA_FLASH_ATTN_TYPE_AUTO;
+    // Embeddings: one slot per context. Multi-slot only matters for
+    // streaming completions; embedding tasks process the full batch
+    // in one go.
+    params.n_parallel       = 1;
+    params.n_predict        = 0; // not used for embeddings
+    params.cpuparams.n_threads = request.num_threads;
+
+    // Disable the upstream prompt cache — irrelevant for embeddings
+    // and a large fixed RAM allocation we don't need on mobile.
+    params.cache_ram_mib = 0;
+
+#if TARGET_IPHONE_SIMULATOR
+    params.n_gpu_layers = 0;
+#else
+    params.n_gpu_layers = request.num_gpu_layers;
+#endif
+
+    // The critical bits — these flip llama_context into embedding mode.
+    params.embedding = true;
+    switch (request.pooling_type) {
+      case 0:  params.pooling_type = LLAMA_POOLING_TYPE_NONE; break;
+      case 1:  params.pooling_type = LLAMA_POOLING_TYPE_MEAN; break;
+      case 2:  params.pooling_type = LLAMA_POOLING_TYPE_CLS;  break;
+      case 3:  params.pooling_type = LLAMA_POOLING_TYPE_LAST; break;
+      default: params.pooling_type = LLAMA_POOLING_TYPE_UNSPECIFIED; break;
+    }
+
+    // Reject the per-token output mode — this entry point only ships
+    // pooled sentence embeddings (which is what every Tacita caller
+    // wants, and what L2 normalisation downstream expects).
+    if (params.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+      const char * err = "fllama_embed requires a pooled pooling type "
+                         "(MEAN / CLS / LAST), not NONE";
+      log_message(err, request.dart_logger);
+      callback(nullptr, 0, err);
+      return;
+    }
+
+    // ── Get or create server_context (embedding flavour) ────────────
+    auto *srv = g_mgr.get_or_create(request.model_path, params,
+                                    request.dart_logger);
+    if (!srv || !srv->srv_ctx) {
+      const char * err = "fllama_embed: failed to create embedding context";
+      callback(nullptr, 0, err);
+      return;
+    }
+    struct Guard {
+      ServerManager &m; std::string p;
+      ~Guard() { m.release(p); }
+    } guard{g_mgr, request.model_path};
+
+    log_message(std::string("[fllama.embed] ctx ready (") +
+                    std::to_string(ggml_time_ms() - t0) + " ms)",
+                request.dart_logger);
+
+    // ── Post an embedding task ──────────────────────────────────────
+    auto *lctx  = srv->srv_ctx->get_llama_context();
+    if (!lctx) {
+      const char * err = "fllama_embed: llama_context is null";
+      callback(nullptr, 0, err);
+      return;
+    }
+
+    // Confirm the loaded context actually advertises pooling (would
+    // be false if the GGUF metadata was wrong / model lacks the
+    // pooling-type kv pair).
+    if (llama_pooling_type(lctx) == LLAMA_POOLING_TYPE_NONE) {
+      const char * err = "fllama_embed: model context has POOLING_TYPE_NONE "
+                         "(GGUF lacks pooling metadata or model is a "
+                         "generative-only LLM, not an embedding model)";
+      log_message(err, request.dart_logger);
+      callback(nullptr, 0, err);
+      return;
+    }
+
+    auto reader = srv->srv_ctx->get_response_reader();
+
+    server_task task(SERVER_TASK_TYPE_EMBEDDING);
+    task.id    = reader.get_new_id();
+    task.index = 0;
+
+    // Tokenize the input using the model's own tokeniser via the
+    // server helper — handles BOS/EOS placement per the model's
+    // configuration. Use the same JSON entry point the HTTP handler
+    // uses, so we inherit the exact tokenisation contract.
+    const std::string input_text = request.input ? request.input : "";
+    nlohmann::ordered_json json_prompt = input_text;
+    auto tokenized = tokenize_input_prompts(
+        llama_model_get_vocab(llama_get_model(lctx)),
+        /* mctx */ nullptr,
+        json_prompt,
+        /* add_special  */ true,
+        /* parse_special*/ true);
+    if (tokenized.empty() || tokenized.front().empty()) {
+      const char * err = "fllama_embed: input tokenised to zero tokens";
+      callback(nullptr, 0, err);
+      return;
+    }
+    task.tokens = std::move(tokenized.front());
+
+    // Non-OAI; we want the raw float array back through `embedding`.
+    task.params.res_type        = TASK_RESPONSE_TYPE_NONE;
+    task.params.embd_normalize  = request.embd_normalize;
+
+    reader.post_task(std::move(task));
+
+    int rid = request.request_id;
+    auto should_stop = [&] { return g_mgr.is_cancelled(rid); };
+
+    auto batch = reader.wait_for_all(should_stop);
+    if (batch.is_terminated) {
+      callback(nullptr, 0, "fllama_embed: cancelled");
+      g_mgr.clear_cancel(rid);
+      g_mgr.unregister_request_thread(rid);
+      return;
+    }
+    if (batch.error) {
+      std::string msg = "fllama_embed: error";
+      try {
+        auto j = batch.error->to_json();
+        if (j.contains("message")) {
+          msg = "fllama_embed: " + j["message"].get<std::string>();
+        }
+      } catch (...) {}
+      callback(nullptr, 0, msg.c_str());
+      g_mgr.clear_cancel(rid);
+      g_mgr.unregister_request_thread(rid);
+      return;
+    }
+    if (batch.results.empty()) {
+      callback(nullptr, 0, "fllama_embed: no result produced");
+      g_mgr.clear_cancel(rid);
+      g_mgr.unregister_request_thread(rid);
+      return;
+    }
+
+    auto *res = dynamic_cast<server_task_result_embd*>(batch.results.front().get());
+    if (!res || res->embedding.empty() || res->embedding.front().empty()) {
+      callback(nullptr, 0, "fllama_embed: empty embedding vector");
+      g_mgr.clear_cancel(rid);
+      g_mgr.unregister_request_thread(rid);
+      return;
+    }
+
+    // Pooling type != NONE → exactly one pooled vector per input.
+    const auto &vec = res->embedding.front();
+    log_message(std::string("[fllama.embed] done dim=") +
+                    std::to_string(vec.size()) + " in " +
+                    std::to_string(ggml_time_ms() - t0) + " ms",
+                request.dart_logger);
+    callback(vec.data(), static_cast<int32_t>(vec.size()), nullptr);
+
+    g_mgr.clear_cancel(rid);
+    g_mgr.unregister_request_thread(rid);
+  } catch (const std::exception &e) {
+    std::string msg = std::string("fllama_embed: ") + e.what();
+    callback(nullptr, 0, msg.c_str());
+    g_mgr.clear_cancel(request.request_id);
+    g_mgr.unregister_request_thread(request.request_id);
+  } catch (...) {
+    callback(nullptr, 0, "fllama_embed: unknown exception");
+    g_mgr.clear_cancel(request.request_id);
+    g_mgr.unregister_request_thread(request.request_id);
+  }
+}
+
+EMSCRIPTEN_KEEPALIVE void fllama_embed(fllama_embed_request request,
+                                       fllama_embed_callback callback) {
+  int rid = request.request_id;
+  std::thread t([request, callback] { run_embedding(request, callback); });
+  g_mgr.register_request_thread(rid, std::move(t));
+}
+
+EMSCRIPTEN_KEEPALIVE void fllama_embed_sync(fllama_embed_request request,
+                                            fllama_embed_callback callback) {
+  run_embedding(request, callback);
+}
+
+EMSCRIPTEN_KEEPALIVE FFI_PLUGIN_EXPORT void
+fllama_embed_cancel(int request_id) {
+  g_mgr.cancel(request_id);
+}
+
 } // extern "C"

@@ -36,6 +36,17 @@ struct ServerResources {
   int n_gpu_layers  = -1;
   std::string mmproj_path;
 
+  // FLLAMA-PATCH (Tacita D-2): an embedding context cannot be reused
+  // for chat completion and vice-versa — `params.embedding` flips
+  // `llama_context_params.embeddings` at init, the pooling type is
+  // baked in too, and `n_parallel` differs (embedding paths typically
+  // run with the upstream default of 1 since the slot is busy for
+  // the entire batch). When `embedding == true` we cache the context
+  // under a separate slot of the `servers` map (the key is suffixed
+  // with `|embed`) so a chat load + embedding load on the same GGUF
+  // file path don't trample each other.
+  bool embedding    = false;
+
   ServerResources() = default;
   ~ServerResources(); // terminates loop, joins thread
 
