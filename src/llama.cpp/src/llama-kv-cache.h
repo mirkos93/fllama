@@ -93,8 +93,12 @@ public:
 
     using slot_info_vec_t = std::vector<slot_info>;
 
+    // TODO: refactor the memory instances to not depend on `llama_model`
+    //       instead pass all necessary info (e.g. hparams, dev layers, arch, etc.) directly
+    //       likely through `struct llama_memory_params`
     llama_kv_cache(
             const llama_model & model,
+            const llama_hparams & hparams,
                     ggml_type   type_k,
                     ggml_type   type_v,
                          bool   v_trans,
@@ -238,6 +242,11 @@ private:
     // env: LLAMA_ATTN_ROT_DISABLE
     bool attn_rot_k = false;
     bool attn_rot_v = false;
+
+    // if all layers participating in the cache have constant head size, the value is stored here
+    // otherwise the value is -1
+    int32_t n_embd_head_k_all = 0;
+    int32_t n_embd_head_v_all = 0;
 
     // pre-computed hadamard martrices
     std::unordered_map<int64_t, std::vector<float>> attn_rot_hadamard;

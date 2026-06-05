@@ -5,8 +5,50 @@ cmake_minimum_required(VERSION 3.10)
 
 project(fllama_library VERSION 0.0.1 LANGUAGES CXX)
 
-# Include build info generation
-include("${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/cmake/build-info.cmake")
+# Build-info values.
+#
+# The vendored llama.cpp tree is a plain source copy with NO .git of its own,
+# so llama.cpp's cmake/build-info.cmake (run from inside add_subdirectory below)
+# cannot derive a build number / commit via `git rev-list` — it leaves
+# LLAMA_BUILD_NUMBER empty, which makes common/build-info.cpp.in emit the
+# invalid line `int LLAMA_BUILD_NUMBER = ;`. So we make sure both names are
+# DEFINED before add_subdirectory("llama.cpp"), which turns the subdir's
+# `if(NOT DEFINED LLAMA_BUILD_NUMBER)` guards into no-ops.
+#
+# Priority:
+#   1. Values passed in via -D (hook/build.dart sets these to the vendored
+#      upstream pin) win — we do not override them.
+#   2. Otherwise derive from the fllama repo's own git (standalone CMake build).
+#   3. Otherwise fall back to placeholders.
+if(NOT DEFINED LLAMA_BUILD_NUMBER OR "${LLAMA_BUILD_NUMBER}" STREQUAL "")
+  find_package(Git QUIET)
+  set(_FLLAMA_BUILD_NUMBER "0")
+  set(_FLLAMA_BUILD_COMMIT "unknown")
+  if(Git_FOUND)
+    execute_process(
+      COMMAND ${GIT_EXECUTABLE} rev-list --count HEAD
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+      OUTPUT_VARIABLE _GIT_COUNT OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE _GIT_RES_COUNT ERROR_QUIET)
+    if(_GIT_RES_COUNT EQUAL 0 AND NOT "${_GIT_COUNT}" STREQUAL "")
+      set(_FLLAMA_BUILD_NUMBER "${_GIT_COUNT}")
+    endif()
+    execute_process(
+      COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+      OUTPUT_VARIABLE _GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE _GIT_RES_HASH ERROR_QUIET)
+    if(_GIT_RES_HASH EQUAL 0 AND NOT "${_GIT_HASH}" STREQUAL "")
+      set(_FLLAMA_BUILD_COMMIT "${_GIT_HASH}")
+    endif()
+  endif()
+  set(LLAMA_BUILD_NUMBER "${_FLLAMA_BUILD_NUMBER}")
+  set(LLAMA_BUILD_COMMIT "${_FLLAMA_BUILD_COMMIT}")
+endif()
+if(NOT DEFINED LLAMA_BUILD_COMMIT OR "${LLAMA_BUILD_COMMIT}" STREQUAL "")
+  set(LLAMA_BUILD_COMMIT "unknown")
+endif()
+message(STATUS "fllama build-info: number=${LLAMA_BUILD_NUMBER} commit=${LLAMA_BUILD_COMMIT}")
 
 
 set(BUILD_SHARED_LIBS OFF)
@@ -75,20 +117,34 @@ if(NOT DEFINED LLAMA_INSTALL_VERSION OR LLAMA_INSTALL_VERSION STREQUAL "")
 endif()
 
 add_subdirectory("llama.cpp")
-# cpp-httplib must be added before common: starting with llama.cpp build b8665
-# (commit b8635075f), common/CMakeLists.txt unconditionally links the
-# cpp-httplib target. We don't ship the HTTP server, but common still
-# references httplib symbols at link time, so the target must be defined.
+# cpp-httplib must be added before common: common/CMakeLists.txt PRIVATE-links
+# the cpp-httplib target (for the model-download helper). We don't ship the
+# HTTP server, but common still references httplib symbols at link time, so
+# the target must be defined.
 add_subdirectory("llama.cpp/vendor/cpp-httplib")
 add_subdirectory("llama.cpp/common")
 add_subdirectory("llama.cpp/tools/mtmd")
 
 # Build the server-context library directly from source files.
 # We cannot use add_subdirectory(tools/server) because it also defines the
-# llama-server executable which requires cpp-httplib (which we don't ship).
+# llama-server executable + llama-server-impl, which pull in cpp-httplib's
+# HTTP server (server-http.cpp) and server-models.cpp's subprocess.h
+# (unavailable on the Android NDK for armeabi-v7a). We hand-pick the core
+# files master's `server-context` target is built from, MINUS server-tools.cpp.
+#
+# server-tools.cpp is part of master's server-context target but `#include`s
+# <sheredom/subprocess.h> (subprocess_create → posix_spawn_file_actions_*),
+# which the Android NDK does NOT provide for armeabi-v7a on API 26+ — the exact
+# hazard that drove the original pin choice. It implements the OPTIONAL builtin
+# "server tools" (web-search / code-exec subprocess runners) used only by the
+# HTTP server layer; nothing in server_context or fllama.cpp references it (no
+# server_tools member, no calls). So we exclude it. The remaining 5 files form
+# a clean STATIC lib linking only `llama-common` + `mtmd`, with no HTTP /
+# subprocess dependency.
 find_package(Threads REQUIRED)
 set(SERVER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/server")
 add_library(server-context STATIC
+  ${SERVER_SRC_DIR}/server-chat.cpp
   ${SERVER_SRC_DIR}/server-task.cpp
   ${SERVER_SRC_DIR}/server-queue.cpp
   ${SERVER_SRC_DIR}/server-common.cpp
@@ -102,7 +158,7 @@ target_include_directories(server-context PRIVATE
 if (BUILD_SHARED_LIBS)
   set_target_properties(server-context PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
-target_link_libraries(server-context PUBLIC common mtmd ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(server-context PUBLIC llama-common mtmd ${CMAKE_THREAD_LIBS_INIT})
 
 add_library(fllama SHARED
   "fllama_chat_template.cpp"
@@ -127,7 +183,7 @@ if (ANDROID)
   target_link_options(fllama PRIVATE "-Wl,-z,max-page-size=16384")
 endif()
 target_include_directories(fllama PUBLIC .)
-target_link_libraries(fllama PUBLIC llama common mtmd server-context)
+target_link_libraries(fllama PUBLIC llama llama-common mtmd server-context)
 
 # Apple: link system frameworks for Metal, Accelerate, etc.
 # These are needed because we statically link ggml-metal into this shared lib.

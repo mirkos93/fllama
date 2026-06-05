@@ -119,7 +119,14 @@ ServerManager::get_or_create(const std::string &model_path,
   res->model_path = model_path;
   res->srv_ctx = std::make_unique<server_context>();
 
-  if (!res->srv_ctx->load_model(params)) {
+  // Upstream's server_context::load_model() now takes a *non-const*
+  // common_params & (it back-fills derived defaults during load). Our
+  // get_or_create() receives params by const-ref, so work on a local
+  // mutable copy. The post-load reads below use the original `params`,
+  // which already carries every field we forward (n_ctx, n_gpu_layers,
+  // mmproj.path, embedding) from the caller.
+  common_params load_params = params;
+  if (!res->srv_ctx->load_model(load_params)) {
     std::cerr << "[ServerManager] load_model failed: " << model_path << "\n";
     return nullptr;
   }

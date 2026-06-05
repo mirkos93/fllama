@@ -82,9 +82,10 @@ fllamaChat(request, (response, done) {
   Web is __extremely__ slow, ex. on a MBP M2 Max with 64 VRAM, it does ~2 tokens/second with a 3B parameter model. It's best seen as validation for your users that you will strive to support free LLMs everywhere.
   To install: copy the fllama_wasm* files from `example/web` to your app's `web` directory, then add the `<script>` tag in `example/web/index.html`.
 ### Supported model architectures
-  This fork pins llama.cpp at `b8635075f` (build `b8665`, 2026-04-04). All
-  architectures supported by that build load. Highlights for recent on-device
-  models:
+  This fork pins llama.cpp at upstream master `2016bf2b3` (2026-06-05). All
+  architectures supported by that build load, including any GGUF using the
+  `GGML_TYPE_Q1_0` tensor type (e.g. HauhauCS Gemma-4-E2B quants), which the
+  previous `b8635075f` pin rejected. Highlights for recent on-device models:
 
   | Family    | Architecture(s)                                  | Notes                              |
   |-----------|--------------------------------------------------|-----------------------------------|

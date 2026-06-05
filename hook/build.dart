@@ -254,8 +254,11 @@ Map<String, String> _computeDefines(OS targetOS) {
     'LLAMA_BUILD_SERVER': 'OFF',
     'LLAMA_BUILD_TESTS': 'OFF',
     'LLAMA_BUILD_EXAMPLES': 'OFF',
-    'LLAMA_BUILD_NUMBER': '8665',
-    'LLAMA_BUILD_COMMIT': 'b8635075f',
+    // Upstream llama.cpp pin baked into the vendored source tree.
+    // The vendored copy has no .git, so these stamp build-info.cpp instead of
+    // a `git rev-list` count. Bump together with the vendored source drop.
+    'LLAMA_BUILD_NUMBER': '24171',
+    'LLAMA_BUILD_COMMIT': '2016bf2b3',
   };
 
   // Apple (macOS + iOS): Metal GPU, no OpenMP.
